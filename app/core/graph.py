@@ -1,0 +1,297 @@
+import pandas as pd
+from typing import Literal
+from langgraph.graph import StateGraph, END
+from langchain.output_parsers import PydanticOutputParser
+from langchain.prompts import PromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+from database.database import db_manager, sql_engine
+from config.settings import settings
+from logger import logger
+from schema.models import ChatBotState, SQLResponse
+
+class FinancialChatBot:
+    def __init__(self):
+        self.output_parser = PydanticOutputParser(
+            pydantic_object=SQLResponse
+        )
+        self.llm = ChatGoogleGenerativeAI(
+            model = settings.GOOGLE_GEMINI_MODEL,
+            google_api_key = settings.GOOGLE_API_KEY,
+            temperature = 0.1
+        )
+        self.graph = self._build_graph()
+
+    def _build_graph(
+            self
+    ) -> StateGraph:
+        """
+        Build the LangGraph Workflow
+        """
+        workflow = StateGraph(ChatBotState)
+
+        # Add nodes
+        workflow.add_node("fetch_table_info", self._fetch_table_info)
+        workflow.add_node("analyze_query", self._analyze_query)
+        workflow.add_node("execute_sql", self._execute_sql)
+        workflow.add_node("generate_response", self._generate_response)
+
+        # Define edges
+        workflow.set_entry_point("fetch_table_info")
+        workflow.add_edge("fetch_table_info", "analyze_query")
+        workflow.add_conditional_edges(
+            "analyze_query",
+            self._should_execute_sql,
+            {
+                "execute": "execute_sql",
+                "respond": "generate_response"
+            }
+        )
+        workflow.add_edge("execute_sql", "generate_response")
+        workflow.add_edge("generate_response", END)
+        
+        # Save the graph visualization as PNG
+        # try:
+        #     import os
+        #     png_data = workflow.compile().get_graph().draw_mermaid_png()
+        #     os.makedirs("solutions", exist_ok=True)
+        #     with open("solutions/flow.png", "wb") as f:
+        #         f.write(png_data)
+        #     logger.info("Graph visualization saved as flow.png")
+        # except Exception as viz_error:
+        #     logger.warning(f"Could not save graph visualization: {viz_error}")
+
+        return workflow.compile()
+    
+    async def _fetch_table_info(
+            self,
+            state: ChatBotState
+    ) -> ChatBotState:
+        """
+        Fetch all table information from MongoDB based on user_id and session_id
+        """
+        try:
+            logger.info(f"Fetching table info for user: {state['user_id']}, session: {state['session_id']}")
+
+            table_info =  await db_manager.database.documents_data.find_one(
+                {
+                    "user_id": state['user_id'],
+                    "session_id": state['session_id']
+                },
+                {
+                    "_id": 0,
+                    "documents": 1
+                }
+            )
+            if table_info and "documents" in table_info:
+                state["table_info"] = table_info["documents"]
+                logger.info(f"Found {len(table_info['documents'])} tables for user")
+            else:
+                state["table_info"] = []
+                logger.warning(f"No table information found for user")
+            logger.info(f"State After Fetching Table Info {str(state)}")
+            return state
+        except Exception as e:
+            logger.error(f"Error occured while fetching table info: {e}")
+            return state
+
+    async def _analyze_query(
+            self,
+            state: ChatBotState
+    ) -> ChatBotState:
+        """
+        Analyze user query with LLM to generate SQL Query. 
+        """
+        try:
+            system_prompt = """
+You are an expert financial data analyst and SQL query generator. Your goal is to create a correct, optimized SQL query based on the user question and the given table schema details.
+
+### Context:
+- User Query: {user_query}
+- Available Tables & Schema: {table_information}
+
+### Rules:
+1. Only use tables and columns mentioned in `table_information`. Do NOT assume columns that do not exist.
+2. Prefer using **table aliases** for clarity.
+3. If the query involves joining multiple tables, use appropriate **JOIN conditions** based on matching keys (e.g., user_id, transaction_id).
+4. Use **aggregate functions** (SUM, AVG, COUNT) where relevant.
+5. If the user asks for recent data, assume **ORDER BY date DESC LIMIT X** where X is reasonable (like 10).
+6. Avoid SELECT *; only select necessary columns.
+7. Return only the SQL query, nothing else. Do not explain or include extra text.
+8. Validate SQL syntax and make sure it will run in MySQL 8.0.
+9. Do NOT include `DROP`, `DELETE`, `INSERT`, or any destructive statements.
+
+### Required Output Format:
+{format_instructions}
+
+### Additional Considerations:
+- If the user asks for a date range, use BETWEEN or appropriate filtering.
+- For percentage calculations, use correct MySQL syntax.
+- Always enclose column names and table names in backticks (`) if needed.
+"""
+            prompt = PromptTemplate(
+                template=system_prompt,
+                input_variables=["user_query", "table_information"],
+                partial_variables={"format_instructions": self.output_parser.get_format_instructions()}
+            )
+
+            chain = prompt | self.llm | self.output_parser
+            response = await chain.ainvoke({
+                "user_query": state["user_query"],
+                "table_information": state["table_info"]
+            })
+            if not isinstance(response, SQLResponse):
+                logger.error("Invalid response format from LLM")
+                state["sql_response"] = SQLResponse(
+                    response=False, 
+                    message="Invalid SQL generation."
+                )
+            state["sql_response"] = response
+            logger.info(f"State After Analyze Query {str(state)}")
+            return state
+        except Exception as e:
+            logger.error(f"Error in analyze_query: {str(e)}")
+            state["sql_response"] = SQLResponse(
+                response=False,
+                message="Error processing your request. Please try again."
+            )
+            return state
+        
+    def _should_execute_sql(
+            self,
+            state: ChatBotState
+    ) -> Literal["execute", "respond"]:
+        """
+        Conditional edge function to determine next step
+        """
+        if state["sql_response"] and state["sql_response"].response:
+            logger.info("Execute SQL Node will be called")
+            return "execute"
+        logger.info("Direct Response will be generated")
+        return "respond"
+    
+    async def _execute_sql(
+            self,
+            state: ChatBotState
+    ) -> ChatBotState:
+        """
+        Execute the SQL query and fetch results
+        """
+        try:
+            if not state["sql_response"] or not state["sql_response"].message:
+                state["sql_result"] = []
+                return state
+            query = state["sql_response"].message
+            if "DROP" in query.upper() or "DELETE" in query.upper():
+                raise ValueError("Potential dangerous SQL detected.")
+            df = pd.read_sql(query, sql_engine)
+            state["sql_result"] = df.to_dict('records')
+            logger.info(f"SQL query executed successfully. Retrieved {len(state['sql_result'])} rows")
+            logger.info(f"State after executing sql query {str(state)}")
+            return state
+        except Exception as e:
+            logger.error(f"Error executing SQL query: {str(e)}")
+            state["sql_result"] = []
+            state["sql_response"] = SQLResponse(
+                response=False,
+                message = f"""Error execting query: {str(e)}
+                Previous sql_response: {str(state["sql_response"])}"""
+            )
+            return state
+        
+    async def _generate_response(
+            self,
+            state: ChatBotState
+    ) -> ChatBotState:
+        """
+        Generate final response using LLM
+        """
+        try:
+            if state["sql_response"] and state["sql_response"].response and state["sql_result"]:
+                # Successful query execution
+                system_prompt = """
+You are a helpful financial data analyst. Generate a clear, informative and concise response based on the SQL Query results and .
+
+Rules:
+1. Provide insights and analysis, not just raw data
+2. Use clear, business-friendly language
+3. Highlight key findings and trends
+4. Keep responses concise but informative
+5. If the data shows financial patterns, explain their significance
+6. If user query is out of context please say I am Financial ChatBot please ask me questions related to financial data.
+7. If the user greets you then greets them back, and ask their query related to financial data.
+8. If table_information is not available, please inform the user that you cannot process their request without the necessary table information. Please upload the relevant documents.
+
+User Query: {user_query}
+SQL Query Response: {sql_response}
+SQL Query Result: {sql_result}
+"""
+            else:
+                # Failed query or no data
+                system_prompt = """
+You are a helpful financial assistant. Provide a clear explanation for why the user's query cannot be answered with the available data.
+
+Rules:
+1. Be empathetic and helpful
+2. Keep response concise
+3. Make it under 50 words
+4. If user query is out of context please say I am Financial ChatBot please ask me questions related to financial data.
+5. If the user greets you then greets them back, and ask their query related to financial data.
+6. If table_information is not available, please inform the user that you cannot process their request without the necessary table information. Please upload the relevant documents.
+
+User Query: {user_query}
+SQL Query Response: {sql_response}
+SQL Query Result: {sql_result}
+"""
+  
+            prompt = PromptTemplate(
+                template=system_prompt,
+                input_variables=["user_query", "sql_response", "sql_result"]
+            )
+
+            chain = prompt | self.llm
+            response = await chain.ainvoke({
+                "user_query": state["user_query"],
+                "sql_response": state["sql_response"],
+                "sql_result": state["sql_result"]
+            })
+            state["final_response"] = response.content
+            logger.info(f"Final response returned to user: {state['final_response']}")
+            logger.info(f"Final State: {str(state)}")
+            return state
+        except Exception as e:
+            logger.error(f"Error generating response: {str(e)}")
+            state["final_response"] = "I apologize, but I encountered an error while processing your request. Please try again."
+            return state
+
+    async def process_query(
+            self,
+            user_id: str,
+            session_id: str,
+            user_query: str
+    ) -> str:
+        """
+        Main method to process user queries
+
+        Args:
+            user_id: User Identifier
+            session_id: Session Identifier
+            user_query: User's Query related to Financial data
+        Returns:
+            Final response string
+        """
+        initial_state = ChatBotState(
+            user_id=user_id,
+            session_id=session_id,
+            user_query=user_query,
+            table_info=None,
+            sql_response=None,
+            sql_result=None,
+            final_response="",
+            messages=[]
+        )
+        try:
+            final_state = await self.graph.ainvoke(initial_state)
+            return final_state["final_response"]
+        except Exception as e:
+            logger.error(f"Error processing query: {str(e)}")
+            return "I apologize, but I encountered an error while processing your request. Please try again."

@@ -70,6 +70,7 @@ class ExcelFileProcess:
                 })
 
             # Step4: Return DF Information
+            first_5_rows = df.head(5).to_dict('records')
             df_info = {
                     "column_details": column_details,
                     "object_columns": object_columns,
@@ -77,7 +78,7 @@ class ExcelFileProcess:
                     "numeric_columns": numeric_columns,
                     "numeric_cols_data": numerical_cols_data,
                     "row_count": len(df),
-                    "first_5_row": df.head(5).to_dict()
+                    "first_5_row": first_5_rows
                 }
             return df_info
         except Exception as e:
