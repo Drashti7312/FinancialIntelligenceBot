@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     MONGODB_NAME: str = "financial_chatbot_main"
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY")
     GOOGLE_GEMINI_MODEL: str = "gemini-2.0-flash-lite"
+    GOOGLE_EMBEDDING_MODEL: str = "models/embedding-001"
     SQL_CONNECTION_URL: str = os.getenv("SQL_CONNECTION_URL")
     SQL_DB_NAME: str = "financial_chatbot"
 

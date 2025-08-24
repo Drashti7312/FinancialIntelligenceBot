@@ -8,6 +8,7 @@ from database.database import db_manager, sql_engine
 from config.settings import settings
 from logger import logger
 from schema.models import ChatBotState, SQLResponse
+from core.rag_process import RAGProcess
 
 class FinancialChatBot:
     def __init__(self):
@@ -33,6 +34,7 @@ class FinancialChatBot:
         workflow.add_node("fetch_table_info", self._fetch_table_info)
         workflow.add_node("analyze_query", self._analyze_query)
         workflow.add_node("execute_sql", self._execute_sql)
+        workflow.add_node("rag_process", self._rag_process)
         workflow.add_node("generate_response", self._generate_response)
 
         # Define edges
@@ -43,24 +45,27 @@ class FinancialChatBot:
             self._should_execute_sql,
             {
                 "execute": "execute_sql",
-                "respond": "generate_response"
+                "respond": "generate_response",
+                "rag": "rag_process"
             }
         )
         workflow.add_edge("execute_sql", "generate_response")
+        workflow.add_edge("rag_process", "generate_response")
         workflow.add_edge("generate_response", END)
         
+        flow = workflow.compile()
         # Save the graph visualization as PNG
-        # try:
-        #     import os
-        #     png_data = workflow.compile().get_graph().draw_mermaid_png()
-        #     os.makedirs("solutions", exist_ok=True)
-        #     with open("solutions/flow.png", "wb") as f:
-        #         f.write(png_data)
-        #     logger.info("Graph visualization saved as flow.png")
-        # except Exception as viz_error:
-        #     logger.warning(f"Could not save graph visualization: {viz_error}")
+        try:
+            import os
+            png_data = flow.get_graph().draw_mermaid_png()
+            os.makedirs("solutions", exist_ok=True)
+            with open("solutions/flow.png", "wb") as f:
+                f.write(png_data)
+            logger.info("Graph visualization saved as flow.png")
+        except Exception as viz_error:
+            logger.warning(f"Could not save graph visualization: {viz_error}")
 
-        return workflow.compile()
+        return flow
     
     async def _fetch_table_info(
             self,
@@ -159,15 +164,19 @@ You are an expert financial data analyst and SQL query generator. Your goal is t
     def _should_execute_sql(
             self,
             state: ChatBotState
-    ) -> Literal["execute", "respond"]:
+    ) -> Literal["execute", "respond", "rag"]:
         """
         Conditional edge function to determine next step
         """
-        if state["sql_response"] and state["sql_response"].response:
+        if not state["sql_response"].response or not state["sql_response"].response :
+            logger.info("SQL response is None - routing to RAG node")
+            return "rag"
+        elif state["sql_response"] and state["sql_response"].response:
             logger.info("Execute SQL Node will be called")
             return "execute"
-        logger.info("Direct Response will be generated")
-        return "respond"
+        else:
+            logger.info("Direct Response will be generated")
+            return "respond"
     
     async def _execute_sql(
             self,
@@ -208,6 +217,7 @@ You are an expert financial data analyst and SQL query generator. Your goal is t
         try:
             if state["sql_response"] and state["sql_response"].response and state["sql_result"]:
                 # Successful query execution
+                logger.info("Successful query execution. ")
                 system_prompt = """
 You are a financial data analyst. Analyze the SQL query result and provide insights that are relevant to the asked query.
 
@@ -221,13 +231,34 @@ You are a financial data analyst. Analyze the SQL query result and provide insig
 7. Be concise (max 200 words), clear, and business-oriented.
 8. No need to add anything extra, just provide SQL Query result related answer.
 9. Try to provide full answer based on user query and SQL Query result
+10. If for example 'SUM(`transaction_count`)": null' provide as SQL Query Result it means, No data found related to User Query, So, respond accordingly.
 
 User Query: {user_query}
 SQL Query Result:
 {sql_result}
 """
+            elif state["rag_result"]:
+                 system_prompt = """
+You are a financial data analyst. Analyze RAG result and user query, and provide insights based on the retrieved document content.
+
+Rules:
+1. **ALWAYS base your response ONLY on the given RAG Result and user query.**
+2. First, identify what the user has asked to provide.
+3. Then, generate answer structured output based on RAG Result content.
+4. If the RAG result contains no relevant information for the query, clearly state: "The uploaded documents don't contain information relevant to your query."
+5. If the RAG result is empty or failed, respond: "No documents found. Please upload PDF or DOCX files first."
+6. Make sure to include all relevant details from the retrieved document chunks.
+7. Be concise (max 200 words), clear, and business-oriented.
+8. If the query is unrelated to financial documents, say: "I am a Financial ChatBot. Please ask me questions related to financial documents or data."
+9. Reference specific document sections when providing information (e.g., "According to the document...").
+10. Do not hallucinate or add information not present in the RAG Result.
+
+User Query: {user_query}
+RAG Result: {rag_result}
+"""
             else:
                 # Failed query or no data
+                logger.info("Failed query or no data")
                 system_prompt = """
 You are a helpful financial assistant. Explain clearly why the query cannot be answered with the given data.
 
@@ -253,7 +284,8 @@ SQL Query Result: {sql_result}
             response = await chain.ainvoke({
                 "user_query": state["user_query"],
                 "sql_response": state["sql_response"],
-                "sql_result": state["sql_result"]
+                "sql_result": state["sql_result"],
+                "rag_result": state["rag_result"]
             })
             state["final_response"] = response.content
             logger.info(f"Final response returned to user: {state['final_response']}")
@@ -287,6 +319,7 @@ SQL Query Result: {sql_result}
             table_info=None,
             sql_response=None,
             sql_result=None,
+            rag_result={},
             final_response="",
             messages=[]
         )
@@ -295,6 +328,7 @@ SQL Query Result: {sql_result}
             return {
                 "sql_response": final_state["sql_response"],
                 "sql_result": final_state["sql_result"],
+                "rag_result": final_state["rag_result"],
                 "response": final_state["final_response"]
             }
         except Exception as e:
@@ -302,3 +336,17 @@ SQL Query Result: {sql_result}
             return {
                 "response": "I apologize, but I encountered an error while processing your request. Please try again."
             }
+
+    async def _rag_process(
+            self,
+            state: ChatBotState
+    ):
+        try:
+            logger.info("Starting RAG process")
+            state = await RAGProcess()._rag_process(
+                state
+            )
+            return state
+        except Exception as e:
+            logger.info(f"Error in RAG process: {str(e)}")
+            return state

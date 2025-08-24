@@ -4,6 +4,7 @@ from config.settings import settings
 from database.database import db_manager, sql_engine
 from logger import logger, log_exception
 from services.excel_process import ExcelFileProcess
+from services.pdf_doc_process import PdfDocProcess
 
 class UploadService:
     def __init__(
@@ -15,6 +16,7 @@ class UploadService:
             file_extension
         ):
         self.excel_utils = ExcelFileProcess()
+        self.pdf_doc_utils = PdfDocProcess()
         self.user_id = user_id
         self.session_id = session_id
         self.file_data = file_data
@@ -29,14 +31,15 @@ class UploadService:
             logger.info("Checking if file already exists")
             if await self.check_exist_files():
                 logger.info("File already exists")
-                # return {"error": "File already exists"}
-                
+                return {"error": "File already exists"}
             
             logger.info("File Extension is %s", self.file_extension)
             if self.file_extension in settings.EXCEL_FILE_EXTENSIONS:
+                logger.info("Processing Excel file")
                 return await self._excel_file_process()
             elif self.file_extension in settings.DOCUMENT_FILE_EXTENSIONS:
-                pass
+                logger.info("Processing Document file")
+                return await self.pdf_doc_process()
             else:
                 logger.warning("Unsupported file extension: %s", self.file_extension)
                 return {"error": "Unsupported file extension"}
@@ -138,5 +141,37 @@ class UploadService:
                 "metadata.session_id": self.session_id,
                 "metadata.user_id": self.user_id
             })
+        except Exception as e:
+            return log_exception(e, logger)
+
+    async def pdf_doc_process(
+            self
+    ):
+        try:
+            logger.info("Processing Excel file")
+            # Step1: Read Excel file
+            doc_text = await self.pdf_doc_utils._read_pdf_doc_files(
+                self.file_extension, 
+                self.file_data
+            )
+            logger.info("Document text extracted")
+            # Step2: Split into chunks
+            chunks = await self.pdf_doc_utils._get_doc_chunks(
+                doc_text
+            )
+            logger.info("Document text splitted into chunks")
+
+            # Step3: Generate embeddings and store it to FAISS
+            await self.pdf_doc_utils._get_text_embeddings(
+                chunks,
+                self.user_id,
+                self.session_id
+            )
+            logger.info("Document embeddings created and stored in FAISS")
+
+            # Step4: Store excel file info into GridFS
+            await self.save_file_gridfs()
+
+            return True
         except Exception as e:
             return log_exception(e, logger)
