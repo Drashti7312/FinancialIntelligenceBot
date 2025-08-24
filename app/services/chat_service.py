@@ -28,7 +28,7 @@ class ChatService:
             )
 
             # Step3: Save assistant response
-            await self._save_message(user_id, session_id, "assistant", response)
+            await self._save_message(user_id, session_id, "assistant", response.get("response", ""))
 
             return {
                 "success": True,

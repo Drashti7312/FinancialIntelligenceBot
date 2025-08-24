@@ -209,34 +209,35 @@ You are an expert financial data analyst and SQL query generator. Your goal is t
             if state["sql_response"] and state["sql_response"].response and state["sql_result"]:
                 # Successful query execution
                 system_prompt = """
-You are a helpful financial data analyst. Generate a clear, informative and concise response based on the SQL Query results and .
+You are a financial data analyst. Analyze the SQL query result and provide insights that are relevant to the asked query.
 
-Rules:
-1. Provide insights and analysis, not just raw data
-2. Use clear, business-friendly language
-3. Highlight key findings and trends
-4. Keep responses concise but informative
-5. If the data shows financial patterns, explain their significance
-6. If user query is out of context please say I am Financial ChatBot please ask me questions related to financial data.
-7. If the user greets you then greets them back, and ask their query related to financial data.
-8. If table_information is not available, please inform the user that you cannot process their request without the necessary table information. Please upload the relevant documents.
+### Instructions:
+1. **ALWAYS base your response ONLY on the given SQL Query Result and user query.**
+2. First, identify what the user has asked to provide.
+3. Then, generate answer structured output based on SQL Query Result
+4. Do not guess values; only use provided data.
+5. If the result is empty, respond: "No data found for your query."
+6. If query is unrelated to financial data, say: "I am a Financial ChatBot. Please ask me questions related to financial data."
+7. Be concise (max 200 words), clear, and business-oriented.
+8. No need to add anything extra, just provide SQL Query result related answer.
+9. Try to provide full answer based on user query and SQL Query result
 
 User Query: {user_query}
-SQL Query Response: {sql_response}
-SQL Query Result: {sql_result}
+SQL Query Result:
+{sql_result}
 """
             else:
                 # Failed query or no data
                 system_prompt = """
-You are a helpful financial assistant. Provide a clear explanation for why the user's query cannot be answered with the available data.
+You are a helpful financial assistant. Explain clearly why the query cannot be answered with the given data.
 
-Rules:
-1. Be empathetic and helpful
-2. Keep response concise
-3. Make it under 50 words
-4. If user query is out of context please say I am Financial ChatBot please ask me questions related to financial data.
-5. If the user greets you then greets them back, and ask their query related to financial data.
-6. If table_information is not available, please inform the user that you cannot process their request without the necessary table information. Please upload the relevant documents.
+### Rules:
+1. Be empathetic and helpful.
+2. Keep response concise (max 50 words).
+3. If the query is unrelated to finance, respond: "I am a Financial ChatBot. Please ask questions related to financial data."
+4. If it's a greeting, greet back and invite a financial question.
+5. If table info is missing, inform the user they must upload documents.
+6. If no matching data, say the query returned no results.
 
 User Query: {user_query}
 SQL Query Response: {sql_response}
@@ -291,7 +292,13 @@ SQL Query Result: {sql_result}
         )
         try:
             final_state = await self.graph.ainvoke(initial_state)
-            return final_state["final_response"]
+            return {
+                "sql_response": final_state["sql_response"],
+                "sql_result": final_state["sql_result"],
+                "response": final_state["final_response"]
+            }
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}")
-            return "I apologize, but I encountered an error while processing your request. Please try again."
+            return {
+                "response": "I apologize, but I encountered an error while processing your request. Please try again."
+            }
