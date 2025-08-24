@@ -55,15 +55,15 @@ class FinancialChatBot:
         
         flow = workflow.compile()
         # Save the graph visualization as PNG
-        try:
-            import os
-            png_data = flow.get_graph().draw_mermaid_png()
-            os.makedirs("solutions", exist_ok=True)
-            with open("solutions/flow.png", "wb") as f:
-                f.write(png_data)
-            logger.info("Graph visualization saved as flow.png")
-        except Exception as viz_error:
-            logger.warning(f"Could not save graph visualization: {viz_error}")
+        # try:
+        #     import os
+        #     png_data = flow.get_graph().draw_mermaid_png()
+        #     os.makedirs("solutions", exist_ok=True)
+        #     with open("solutions/flow.png", "wb") as f:
+        #         f.write(png_data)
+        #     logger.info("Graph visualization saved as flow.png")
+        # except Exception as viz_error:
+        #     logger.warning(f"Could not save graph visualization: {viz_error}")
 
         return flow
     
