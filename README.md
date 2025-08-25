@@ -69,16 +69,23 @@ app/
  ├── config/            # App configuration
  │    └── settings.py
  ├── core/              # Core AI logic
+ │    ├── graph.py      # LangGraph workflow (FinancialChatBot)
  │    ├── rag_process.py
  ├── database/          # Mongo & SQL database connections
  │    └── database.py
+ ├── route/
+ │    └── chat.py
+ │    └── upload.py
+ ├── route/
+ │    └── chat_service.py
+ │    └── excel_process.py
+ │    └── pdf_doc_process.py
+ │    └── upload_service.py
  ├── schema/            # Pydantic models
  │    └── models.py
  ├── logger.py
- ├── main.py            # FastAPI entrypoint
- └── graph.py           # LangGraph workflow (FinancialChatBot)
+ └── main.py            # FastAPI entrypoint          
 solutions/              # Graph visualization (flow.png)
-Documents/              # Sample financial documents
 ```
 
 ---
