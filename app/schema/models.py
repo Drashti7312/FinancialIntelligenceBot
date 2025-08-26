@@ -20,5 +20,6 @@ class ChatBotState(TypedDict):
     table_info: Optional[List[Dict[str, Any]]]
     sql_response: Optional[SQLResponse]
     sql_result: Optional[List[Dict[str, Any]]]
+    rag_result: Dict
     final_response: str
     messages: List[Any]
