@@ -168,7 +168,7 @@ You are an expert financial data analyst and SQL query generator. Your goal is t
         """
         Conditional edge function to determine next step
         """
-        if not state["sql_response"].response or not state["sql_response"].response :
+        if not state["sql_response"] or not state["sql_response"].response :
             logger.info("SQL response is None - routing to RAG node")
             return "rag"
         elif state["sql_response"] and state["sql_response"].response:
@@ -246,7 +246,7 @@ Rules:
 2. First, identify what the user has asked to provide.
 3. Then, generate answer structured output based on RAG Result content.
 4. If the RAG result contains no relevant information for the query, clearly state: "The uploaded documents don't contain information relevant to your query."
-5. If the RAG result is empty or failed, respond: "No documents found. Please upload PDF or DOCX files first."
+5. If the RAG result is empty or failed, respond: "No documents found. Please upload files first."
 6. Make sure to include all relevant details from the retrieved document chunks.
 7. Be concise (max 200 words), clear, and business-oriented.
 8. If the query is unrelated to financial documents, say: "I am a Financial ChatBot. Please ask me questions related to financial documents or data."

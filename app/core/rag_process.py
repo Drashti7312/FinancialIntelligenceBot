@@ -32,7 +32,7 @@ class RAGProcess:
                 logger.warning("No document vector store found for user")
                 state["rag_result"] = {
                     "success": False,
-                    "message" : "No documents found. Please upload PDF or DOCX files first.",
+                    "message" : "No documents found. Please upload files first.",
                     "retrieved_docs": []
                 }
                 return state
